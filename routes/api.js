@@ -1,33 +1,20 @@
 'use strict';
 const StockModel = require("../models").Stock;
-
-
+const fetch = require('node-fetch');
 
 async function getStock(stock) {
-  const fetch = await import("node-fetch");
-
-  const response = await fetch.default(
-    `https://stock-price-checker-proxy.freecodecamp.rocks/v1/stock/${stock}/quote`
-  );
-
-
+  const response = await fetch(`https://stock-price-checker-proxy.freecodecamp.rocks/v1/stock/${stock}/quote`);
   const { symbol, latestPrice } = await response.json();
   return { symbol, latestPrice };
-
 }
 
-async function createStock(stock, like, ip) {
-  const newStock = new StockModel({
-    symbol: stock,
-    likes: like ? [ip] : [],
-  })
-  const savedNew = newStock.save();
-  return savedNew;
+async function createStock(stock, like) {
+  const likes = like ? 1 : 0; // Initialize likes count based on whether the user liked the stock
+  const newStock = new StockModel({ symbol: stock, likes });
+  return await newStock.save();
 }
 
 async function findStock(stock) {
-
-  console.log(stock)
   return await StockModel.findOne({ symbol: stock }).exec();
 }
 
@@ -36,15 +23,11 @@ async function saveStock(stock, like, ip) {
 
   const foundStock = await findStock(stock);
   if (!foundStock) {
-    const createSaved = await createStock(stock, like, ip);
-
-    saved = createSaved;
-    return saved;
+    saved = await createStock(stock, like);
   } else {
-    if (like && foundStock.likes.indexOf(ip) === -1) {
+    if (like && !foundStock.likes.includes(ip)) {
       foundStock.likes.push(ip);
     }
-
     saved = await foundStock.save();
   }
 
@@ -55,68 +38,51 @@ module.exports = function (app) {
   app.route('/api/stock-prices')
     .get(async function (req, res) {
       const { stock, like } = req.query;
+      
+      if (!stock) {
+        return res.status(400).json({ error: 'Stock symbol is required' });
+      }
+
       if (Array.isArray(stock)) {
-        console.log("stocks", stock);
+        // Handling multiple stocks
+        const [stock1, stock2] = stock;
+        const [data1, data2] = await Promise.all([getStock(stock1), getStock(stock2)]);
+        const [savedStock1, savedStock2] = await Promise.all([
+          saveStock(stock1, like, req.ip),
+          saveStock(stock2, like, req.ip)
+        ]);
 
+        const stockData = [
+          {
+            stock: data1.symbol,
+            price: data1.latestPrice,
+            rel_likes: savedStock1.likes - savedStock2.likes
+          },
+          {
+            stock: data2.symbol,
+            price: data2.latestPrice,
+            rel_likes: savedStock2.likes - savedStock1.likes
+          }
+        ];
 
-        const { symbol, latestPrice } = await getStock(stock[0]);
-        const { symbol: symbol2, latestPrice: latestPrice2 } = await getStock(
-          stock[1]
-        )
-
-        const firststock = await saveStock(stock[0], like, req.ip);
-        const secondstock = await saveStock(stock[1], like, req.ip);
-
-        let stockData = [];
+        return res.json({ stockData });
+      } else {
+        // Handling single stock
+        const { symbol, latestPrice } = await getStock(stock);
         if (!symbol) {
-          stockData.push({
-            rel_likes: firststock.likes.length - secondstock.likes.length,
-          });
-        } else {
-          stockData.push({
+          return res.json({ stockData: { likes: like ? 1 : 0 } });
+        }
+
+        const savedStock = await saveStock(symbol, like, req.ip);
+        const likesCount = savedStock.likes.length || 0;
+
+        return res.json({
+          stockData: {
             stock: symbol,
             price: latestPrice,
-            rel_likes: firststock.likes.length - secondstock.likes.length,
-          })
-        }
-
-        if (!symbol2) {
-          stockData.push({
-            rel_likes: secondstock.likes.length - firststock.likes.length,
-          });
-        } else {
-          stockData.push({
-            stock: symbol2,
-            price: latestPrice2,
-            rel_likes: secondstock.likes.length - firststock.likes.length,
-          })
-        }
-
-        res.json({
-          stockData,
-        })
-
-        return
+            likes: likesCount
+          }
+        });
       }
-      
-      const { symbol, latestPrice } = await getStock(stock);
-      if (!symbol) {
-        res.json({ stockData: { likes: like ? 1 : 0 } });
-        return;
-      }
-
-      const oneStockData = await saveStock(symbol, like, req.ip);
-      console.log("One Stock Data", oneStockData);
-
-      const likesCount = oneStockData && oneStockData.likes ? oneStockData.likes.length : 0;
-
-      res.json({
-        stockData: {
-          stock: symbol,
-          price: latestPrice,
-          likes: likesCount,
-        }
-      });
-
     });
 };
